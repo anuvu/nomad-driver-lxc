@@ -88,6 +88,8 @@ var (
 		"verbosity":      hclspec.NewAttr("verbosity", "string", false),
 		"volumes":        hclspec.NewAttr("volumes", "list(string)", false),
 		"network_mode":   hclspec.NewAttr("network_mode", "string", false),
+		"command":        hclspec.NewAttr("command", "list(string)", false),
+		"environment":    hclspec.NewAttr("environment", "list(string)", false),
 	})
 
 	// capabilities is returned by the Capabilities RPC and indicates what
@@ -167,6 +169,8 @@ type TaskConfig struct {
 	Volumes              []string `codec:"volumes"`
 	NetworkMode          string   `codec:"network_mode"`
 	DefaultConfig        string   `codec:"default_config"`
+	Command              []string `codec:"command"`
+	Environment          []string `codec:"environment"`
 }
 
 // TaskState is the state which is encoded in the handle returned in
@@ -340,10 +344,12 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 
 	c, err := d.initializeContainer(cfg, driverConfig)
 	if err != nil {
+		d.logger.Error("failed to initializeContainer", "error", err)
 		return nil, nil, err
 	}
 
 	opt := toLXCCreateOptions(driverConfig)
+
 	if err := c.Create(opt); err != nil {
 		return nil, nil, fmt.Errorf("unable to create container: %v", err)
 	}
@@ -365,16 +371,21 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	}
 
 	if err := d.mountVolumes(c, cfg, driverConfig); err != nil {
+		d.logger.Error("failed to mountVolumes", "error", err)
 		cleanup()
 		return nil, nil, err
 	}
 
-	if err := c.Start(); err != nil {
+	if err := c.StartExecute(driverConfig.Command); err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("unable to start container: %v", err)
+		return nil, nil, fmt.Errorf("unable to start container: err %v", err)
 	}
 
 	if err := d.setResourceLimits(c, cfg); err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	if err := c.AttachShell(lxc.DefaultAttachOptions); err != nil {
 		cleanup()
 		return nil, nil, err
 	}
