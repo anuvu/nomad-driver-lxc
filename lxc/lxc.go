@@ -82,6 +82,11 @@ func (d *Driver) initializeContainer(cfg *drivers.TaskConfig, taskConfig TaskCon
 		c.SetConfigItem("lxc.environment", env)
 	}
 
+	for key, value := range cfg.Env {
+		env := fmt.Sprintf("%s=%s", key, value)
+		c.SetConfigItem("lxc.environment", env)
+	}
+
 	// use task specific config
 	defaultConfig := taskConfig.DefaultConfig
 	if defaultConfig == "" {
