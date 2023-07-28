@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/nomad-driver-lxc/version"
 	"github.com/hashicorp/nomad/client/stats"
 	"github.com/hashicorp/nomad/drivers/shared/eventer"
+	nstructs "github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
@@ -355,7 +356,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	opt := toLXCCreateOptions(driverConfig)
 
 	if err := c.Create(opt); err != nil {
-		return nil, nil, fmt.Errorf("unable to create container: %v", err)
+		return nil, nil, nstructs.NewRecoverableError(err, true)
 	}
 
 	cleanup := func() {
