@@ -9,6 +9,7 @@ import (
 	"syscall"
 	"time"
 
+	hclog "github.com/hashicorp/go-hclog"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	lxc "github.com/lxc/go-lxc"
 	ldevices "github.com/opencontainers/runc/libcontainer/devices"
@@ -54,6 +55,7 @@ func (d *Driver) initializeContainer(cfg *drivers.TaskConfig, taskConfig TaskCon
 		return nil, fmt.Errorf("failed to initialize container: %v", err)
 	}
 
+	d.logger.Info("NewContainer", "container", hclog.Fmt("%+v", c))
 	if v, ok := verbosityLevels[taskConfig.Verbosity]; ok {
 		c.SetVerbosity(v)
 	} else {
@@ -75,6 +77,16 @@ func (d *Driver) initializeContainer(cfg *drivers.TaskConfig, taskConfig TaskCon
 		return nil, err
 	}
 
+	// set environment
+	for _, env := range taskConfig.Environment {
+		c.SetConfigItem("lxc.environment", env)
+	}
+
+	for key, value := range cfg.Env {
+		env := fmt.Sprintf("%s=%s", key, value)
+		c.SetConfigItem("lxc.environment", env)
+	}
+
 	// use task specific config
 	defaultConfig := taskConfig.DefaultConfig
 	if defaultConfig == "" {
@@ -85,6 +97,7 @@ func (d *Driver) initializeContainer(cfg *drivers.TaskConfig, taskConfig TaskCon
 	if err != nil {
 		d.logger.Warn("failed to load default config", "path", defaultConfig, "error", err)
 	}
+	d.logger.Info("Done initializeContainer", "container", hclog.Fmt("%+v", c))
 
 	return c, nil
 }
@@ -174,6 +187,7 @@ func (d *Driver) mountEntries(cfg *drivers.TaskConfig, taskConfig TaskConfig) ([
 
 	for _, volDesc := range taskConfig.Volumes {
 		// the format was checked in Validate()
+		d.logger.Info("get volume", "container", hclog.Fmt("%+v", volDesc))
 		paths := strings.Split(volDesc, ":")
 
 		if filepath.IsAbs(paths[0]) {
@@ -191,7 +205,9 @@ func (d *Driver) mountEntries(cfg *drivers.TaskConfig, taskConfig TaskConfig) ([
 
 		// LXC assumes paths are relative with respect to rootfs
 		target := strings.TrimLeft(paths[1], "/")
-		mounts = append(mounts, fmt.Sprintf("%s %s none rw,bind,create=dir", paths[0], target))
+		mode := paths[2]
+		pathType := paths[3]
+		mounts = append(mounts, fmt.Sprintf("%s %s none %s,bind,create=%s", paths[0], target, mode, pathType))
 	}
 
 	return mounts, nil

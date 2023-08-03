@@ -9,6 +9,7 @@ import (
 	"github.com/hashicorp/nomad-driver-lxc/version"
 	"github.com/hashicorp/nomad/client/stats"
 	"github.com/hashicorp/nomad/drivers/shared/eventer"
+	nstructs "github.com/hashicorp/nomad/nomad/structs"
 	"github.com/hashicorp/nomad/plugins/base"
 	"github.com/hashicorp/nomad/plugins/drivers"
 	"github.com/hashicorp/nomad/plugins/shared/hclspec"
@@ -88,6 +89,9 @@ var (
 		"verbosity":      hclspec.NewAttr("verbosity", "string", false),
 		"volumes":        hclspec.NewAttr("volumes", "list(string)", false),
 		"network_mode":   hclspec.NewAttr("network_mode", "string", false),
+		"command":        hclspec.NewAttr("command", "list(string)", false),
+		"environment":    hclspec.NewAttr("environment", "list(string)", false),
+		"portmap":        hclspec.NewAttr("portmap", "list(map(number))", false),
 	})
 
 	// capabilities is returned by the Capabilities RPC and indicates what
@@ -150,23 +154,26 @@ type Config struct {
 
 // TaskConfig is the driver configuration of a task within a job
 type TaskConfig struct {
-	Template             string   `codec:"template"`
-	Distro               string   `codec:"distro"`
-	Release              string   `codec:"release"`
-	Arch                 string   `codec:"arch"`
-	ImageVariant         string   `codec:"image_variant"`
-	ImageServer          string   `codec:"image_server"`
-	GPGKeyID             string   `codec:"gpg_key_id"`
-	GPGKeyServer         string   `codec:"gpg_key_server"`
-	DisableGPGValidation bool     `codec:"disable_gpg"`
-	FlushCache           bool     `codec:"flush_cache"`
-	ForceCache           bool     `codec:"force_cache"`
-	TemplateArgs         []string `codec:"template_args"`
-	LogLevel             string   `codec:"log_level"`
-	Verbosity            string   `codec:"verbosity"`
-	Volumes              []string `codec:"volumes"`
-	NetworkMode          string   `codec:"network_mode"`
-	DefaultConfig        string   `codec:"default_config"`
+	Template             string         `codec:"template"`
+	Distro               string         `codec:"distro"`
+	Release              string         `codec:"release"`
+	Arch                 string         `codec:"arch"`
+	ImageVariant         string         `codec:"image_variant"`
+	ImageServer          string         `codec:"image_server"`
+	GPGKeyID             string         `codec:"gpg_key_id"`
+	GPGKeyServer         string         `codec:"gpg_key_server"`
+	DisableGPGValidation bool           `codec:"disable_gpg"`
+	FlushCache           bool           `codec:"flush_cache"`
+	ForceCache           bool           `codec:"force_cache"`
+	TemplateArgs         []string       `codec:"template_args"`
+	LogLevel             string         `codec:"log_level"`
+	Verbosity            string         `codec:"verbosity"`
+	Volumes              []string       `codec:"volumes"`
+	NetworkMode          string         `codec:"network_mode"`
+	DefaultConfig        string         `codec:"default_config"`
+	Command              []string       `codec:"command"`
+	Environment          []string       `codec:"environment"`
+	PortMap              map[string]int `codec:"portmap"`
 }
 
 // TaskState is the state which is encoded in the handle returned in
@@ -280,6 +287,7 @@ func (d *Driver) buildFingerprint() *drivers.Fingerprint {
 }
 
 func (d *Driver) RecoverTask(handle *drivers.TaskHandle) error {
+	d.logger.Info("recover lxc task", "driver_cfg", hclog.Fmt("%+v", handle))
 	if handle == nil {
 		return fmt.Errorf("error: handle cannot be nil")
 	}
@@ -334,18 +342,21 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 		return nil, nil, fmt.Errorf("failed to decode driver config: %v", err)
 	}
 
+	d.logger.Info("starting lxc task driver", "cfg", hclog.Fmt("%+v", cfg))
 	d.logger.Info("starting lxc task", "driver_cfg", hclog.Fmt("%+v", driverConfig))
 	handle := drivers.NewTaskHandle(taskHandleVersion)
 	handle.Config = cfg
 
 	c, err := d.initializeContainer(cfg, driverConfig)
 	if err != nil {
+		d.logger.Error("failed to initializeContainer", "error", err)
 		return nil, nil, err
 	}
 
 	opt := toLXCCreateOptions(driverConfig)
+
 	if err := c.Create(opt); err != nil {
-		return nil, nil, fmt.Errorf("unable to create container: %v", err)
+		return nil, nil, nstructs.NewRecoverableError(err, true)
 	}
 
 	cleanup := func() {
@@ -365,13 +376,14 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 	}
 
 	if err := d.mountVolumes(c, cfg, driverConfig); err != nil {
+		d.logger.Error("failed to mountVolumes", "error", err)
 		cleanup()
 		return nil, nil, err
 	}
 
-	if err := c.Start(); err != nil {
+	if err := c.StartExecute(driverConfig.Command); err != nil {
 		cleanup()
-		return nil, nil, fmt.Errorf("unable to start container: %v", err)
+		return nil, nil, fmt.Errorf("unable to start container: err %v", err)
 	}
 
 	if err := d.setResourceLimits(c, cfg); err != nil {
@@ -414,6 +426,7 @@ func (d *Driver) StartTask(cfg *drivers.TaskConfig) (*drivers.TaskHandle, *drive
 }
 
 func (d *Driver) WaitTask(ctx context.Context, taskID string) (<-chan *drivers.ExitResult, error) {
+	d.logger.Info("wait lxc task", "driver_cfg", hclog.Fmt("%+v", taskID))
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return nil, drivers.ErrTaskNotFound
@@ -457,12 +470,14 @@ func (d *Driver) handleWait(ctx context.Context, handle *taskHandle, ch chan *dr
 }
 
 func (d *Driver) StopTask(taskID string, timeout time.Duration, signal string) error {
+	d.logger.Info("stop lxc task", "driver_cfg", hclog.Fmt("%+v", taskID))
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return drivers.ErrTaskNotFound
 	}
 
 	if err := handle.shutdown(timeout); err != nil {
+		d.logger.Info("stop lxc task", "driver_cfg", hclog.Fmt("failed, %+v", err))
 		return fmt.Errorf("executor Shutdown failed: %v", err)
 	}
 
@@ -470,27 +485,29 @@ func (d *Driver) StopTask(taskID string, timeout time.Duration, signal string) e
 }
 
 func (d *Driver) DestroyTask(taskID string, force bool) error {
+	d.logger.Info("destory lxc task", "driver_cfg", hclog.Fmt("%+v", taskID))
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return drivers.ErrTaskNotFound
 	}
 
 	if handle.IsRunning() && !force {
+		d.logger.Info("destroy lxc task", "driver_cfg", hclog.Fmt("cannot destroy running task"))
 		return fmt.Errorf("cannot destroy running task")
 	}
 
 	if handle.IsRunning() {
 		// grace period is chosen arbitrary here
 		if err := handle.shutdown(1 * time.Minute); err != nil {
+			d.logger.Info("destory lxc task", "driver_cfg", hclog.Fmt("failed to stop %+v", err))
 			handle.logger.Error("failed to destroy executor", "err", err)
 		}
 	}
-	if d.config.GC.Container {
-		handle.logger.Debug("Destroying container", "container", handle.container.Name())
-		// delete the container itself
-		if err := handle.container.Destroy(); err != nil {
-			handle.logger.Error("failed to destroy lxc container", "err", err)
-		}
+	handle.logger.Info("Destroying container", "container", handle.container.Name())
+	// delete the container itself
+	if err := handle.container.Destroy(); err != nil {
+		d.logger.Info("destory lxc task", "driver_cfg", hclog.Fmt("failed to delete %+v", err))
+		handle.logger.Error("failed to destroy lxc container", "err", err)
 	}
 	// finally cleanup task map
 	d.tasks.Delete(taskID)
@@ -498,6 +515,7 @@ func (d *Driver) DestroyTask(taskID string, force bool) error {
 }
 
 func (d *Driver) InspectTask(taskID string) (*drivers.TaskStatus, error) {
+	d.logger.Info("inspect lxc task", "driver_cfg", hclog.Fmt("%+v", taskID))
 	handle, ok := d.tasks.Get(taskID)
 	if !ok {
 		return nil, drivers.ErrTaskNotFound
