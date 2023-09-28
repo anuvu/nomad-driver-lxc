@@ -77,6 +77,9 @@ func (d *Driver) initializeContainer(cfg *drivers.TaskConfig, taskConfig TaskCon
 		return nil, err
 	}
 
+	// set cgroup dir
+	c.SetConfigItem("lxc.cgroup.dir", taskConfig.Cgroup)
+
 	// set environment
 	for _, env := range taskConfig.Environment {
 		c.SetConfigItem("lxc.environment", env)

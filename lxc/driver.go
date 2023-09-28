@@ -91,6 +91,7 @@ var (
 		"network_mode":   hclspec.NewAttr("network_mode", "string", false),
 		"command":        hclspec.NewAttr("command", "list(string)", false),
 		"environment":    hclspec.NewAttr("environment", "list(string)", false),
+		"cgroup":	  hclspec.NewAttr("cgroup", "string", false),
 		"portmap":        hclspec.NewAttr("portmap", "list(map(number))", false),
 	})
 
@@ -173,6 +174,7 @@ type TaskConfig struct {
 	DefaultConfig        string         `codec:"default_config"`
 	Command              []string       `codec:"command"`
 	Environment          []string       `codec:"environment"`
+	Cgroup	             string         `codec:"cgroup"`
 	PortMap              map[string]int `codec:"portmap"`
 }
 
